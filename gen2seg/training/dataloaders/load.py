@@ -698,5 +698,5 @@ class Fluo_N3DH_SIM_with_distances(Dataset):
             "no_bg": False,
             "img_path":img_path,
             "gt_path":gt_path,
-            "neighbors":self.distance_info[gt_path]
+            "distances":self.distance_info[gt_path]
         }
