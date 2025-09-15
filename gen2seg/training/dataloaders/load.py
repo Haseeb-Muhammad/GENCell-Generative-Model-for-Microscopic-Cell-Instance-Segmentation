@@ -659,3 +659,44 @@ class Fluo_N3DH_SIM_with_neighbors(Dataset):
             "gt_path":gt_path,
             "neighbors":self.neighbor_info[gt_path]
         }
+    
+class Fluo_N3DH_SIM_with_distances(Dataset):
+    def __init__(self, root_dir, split, transform=True, height=480, width=640):
+        self.root_dir = root_dir
+        self.split = split
+        self.image_paths, self.gt_paths = self._loadPaths()
+        if transform == True:
+            self.transform = Fluo_N3DH_SIM_transform(H=height, W=width)
+        self.distance_info = self._load_distances()
+    
+    def _load_distances(self,):
+        with open(os.path.join(self.root_dir, "gt", f"{self.split}_distances.json"), "r", encoding="utf-8") as f:
+            json_data = json.load(f)
+            return json_data
+
+    def _loadPaths(self):
+        gt_paths = sorted(glob.glob(os.path.join(self.root_dir, "gt", self.split, "*.png")))
+        image_paths = sorted(glob.glob(os.path.join(self.root_dir, "image", self.split, "*.png")))
+        return image_paths, gt_paths
+    
+    def __len__(self):
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        gt_path = self.gt_paths[idx]
+
+        image = Image.open(img_path).convert("RGB")
+        gt = Image.open(gt_path).convert("RGB")
+
+        if self.transform:
+            rgb_tensor, gt_transformed = self.transform(image, gt)
+
+        return {
+            "rgb": rgb_tensor,
+            "instance": gt_transformed,
+            "no_bg": False,
+            "img_path":img_path,
+            "gt_path":gt_path,
+            "neighbors":self.distance_info[gt_path]
+        }
