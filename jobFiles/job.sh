@@ -9,5 +9,5 @@ srun -K -p batch,V100-32GB-SDS,V100-32GB,V100-32GB-SDS,RTXA6000 \
   --container-workdir="`pwd`" \
   --mem=64G \
   --container-mounts=/netscratch:/netscratch,"`pwd`":"`pwd`" \
-     /bin/bash -c "python /netscratch/muhammad/codes/DataProcessing/get_neighbors.py"
-#    /bin/bash -c "bash /netscratch/muhammad/codes/gen2seg/training/scripts/train_sd_fluoDataset.sh"
+   /bin/bash -c "bash /netscratch/muhammad/codes/gen2seg/training/scripts/train_sd_fluoDataset.sh"
+#  /bin/bash -c "python /netscratch/muhammad/codes/DataProcessing/get_neighbors.py"

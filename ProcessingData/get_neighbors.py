@@ -148,7 +148,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    for split in ["train", "val"]:
+    for split in ["val"]:
         gt_paths = sorted(glob.glob(os.path.join(args.root_dir, "gt", split,"*.png")))
         # gt_paths = sorted(glob.glob("C:\\Users\\hasee\\Desktop\\DFKI\\Visual Results\\gt_first_10_test_images\\*.png"))
 

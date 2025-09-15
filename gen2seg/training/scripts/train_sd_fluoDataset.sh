@@ -11,6 +11,6 @@ accelerate launch /netscratch/muhammad/codes/gen2seg/training/train_SD_Fluo.py \
   --lr_exp_warmup_steps 100 \
   --mixed_precision "no" \
   --num_train_epochs 30 \
-  --output_dir "/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_fluo_with_randomUNet" \
+  --output_dir "/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_fluo_vanilla_N3DH_testing" \
   --enable_xformers_memory_efficient_attention \
   "$@"
