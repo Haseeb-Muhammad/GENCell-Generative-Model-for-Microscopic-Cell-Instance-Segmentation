@@ -28,15 +28,15 @@ def convert_gt_to_rgb(slice, unique):
     return bgr_image    
 
 def prepare_Fluo_N3DH_SIM_data(data_dir, dest_dir=""):
-    # os.makedirs(dest_dir,exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "gt"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "image"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "gt", "train"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "gt", "val"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "gt", "test"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "image", "train"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "image", "val"),exist_ok=True)
-    # os.makedirs(os.path.join(dest_dir, "image", "test"),exist_ok=True)
+    os.makedirs(dest_dir,exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "gt"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "image"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "gt", "train"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "gt", "val"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "gt", "test"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "image", "train"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "image", "val"),exist_ok=True)
+    os.makedirs(os.path.join(dest_dir, "image", "test"),exist_ok=True)
 
     gt_dirs = [os.path.join(data_dir,"train","01_GT", "SEG"), os.path.join(data_dir,"train","02_GT", "SEG")]
     image_dirs = [os.path.join(data_dir,"train","01"), os.path.join(data_dir,"train","02")]
@@ -65,19 +65,20 @@ def prepare_Fluo_N3DH_SIM_data(data_dir, dest_dir=""):
             else:
                 split="test"
             
-            # img = tif.imread(image_paths[i])
+            img = tif.imread(image_paths[i])
             gt = tif.imread(gt_path)
 
             for j, gt_slice in enumerate(gt):
 
                 #Checking if mask is completely black
                 unique = np.unique(gt_slice) 
-                if len(unique) ==1:
+                if len(unique) ==1 and (split=="train" or split=="val"):
                     # print("Only black mask")
                     # bgr_gt = cv2.cvtColor(gt_slice, cv2.COLOR_RGB2BGR)
                     Complete_black_count[split] +=1
-                # else:
-                #     bgr_gt = convert_gt_to_rgb(gt_slice, unique=unique)
+                    continue
+                else:
+                    bgr_gt = convert_gt_to_rgb(gt_slice, unique=unique)
 
                 # Check for first or last slice
                 if (j==0) or (j==len(gt)-1):
@@ -88,13 +89,16 @@ def prepare_Fluo_N3DH_SIM_data(data_dir, dest_dir=""):
                     
                 img_slice = ((img_slice - img_slice.min()) / (img_slice.max() - img_slice.min()) * 255).astype(np.uint8)
                 img_slice=np.transpose(img_slice, (1,2,0))
+                print(f"{parts=}")
+
 
                 slice_full_name = f"{parts[-3].split('_')[0]}_{parts[-1].split('.')[0]}_slice_{str(j)}.png" 
                 
                 cv2.imwrite(os.path.join(dest_dir,"image",split, slice_full_name), cv2.cvtColor(img_slice, cv2.COLOR_RGB2BGR))
                 cv2.imwrite(os.path.join(dest_dir,"gt",split, slice_full_name), bgr_gt)
+                print(f"Image saved at {os.path.join(dest_dir,'gt',split, slice_full_name)}")
             # print(f"{gt_path=}")
     for key, value in Complete_black_count.items():
         print(f"Black count {key}: {value}")
 
-prepare_Fluo_N3DH_SIM_data(data_dir="/netscratch/muhammad/datasets/Fluo-N3DH-SIM+", dest_dir="/netscratch/muhammad/ProcessedDatasets/Complete_Fluo-N3DH-SIM+")
+prepare_Fluo_N3DH_SIM_data(data_dir="C:\\Users\\hasee\\Desktop\\DFKI\\datasets\\Fluo-N3DH-SIM+", dest_dir="C:\\Users\\hasee\\Desktop\\FYP\\GENCell-Generative-Model-for-Microscopic-Cell-Instance-Segmentation\\datasets\\processed_Fluo-N3DH-SIM+")
