@@ -1,20 +1,23 @@
 # gen2seg official inference pipeline code for Stable Diffusion model
-# 
-# This code was adapted from Marigold and Diffusion E2E Finetuning. 
-# 
+#
+# This code was adapted from Marigold and Diffusion E2E Finetuning.
+#
 # Please see our project website at https://reachomk.github.io/gen2seg
 #
 # Additionally, if you use our code please cite our paper, along with the two works above. 
 
 import argparse
+import gc
+import json
 import logging
 import math
 import os
 import shutil
-import json
-import gc
+import sys
+
 import accelerate
 import datasets
+import numpy as np
 import torch
 import torch.utils.checkpoint
 import transformers
@@ -22,9 +25,11 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from packaging import version
+from sklearn.metrics import jaccard_score
+from torch.optim.lr_scheduler import LambdaLR
+from torchvision.utils import save_image
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
-from sklearn.metrics import jaccard_score
 
 import diffusers
 from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel
@@ -32,37 +37,39 @@ from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-from torch.optim.lr_scheduler import LambdaLR
+if is_wandb_available():
+    import wandb
 
-import numpy as np
-#importing pipeline
-import sys
-import os 
+# Custom modules
 current = os.path.dirname(os.path.realpath(__file__))
 parent = os.path.dirname(current)
 sys.path.append(parent)
-from gen2seg_sd_pipeline import gen2segSDPipeline 
+from gen2seg_sd_pipeline import gen2segSDPipeline
 
-# Custom modules
 from dataloaders.load import *
-from util.noise import pyramid_noise_like
-from util.neighboringloss import NeighboringLoss
-from util.unet_prep import replace_unet_conv_in
 from util.lr_scheduler import IterExponential
-from torchvision.utils import save_image
-if is_wandb_available():
-    import wandb
+from util.neighboringloss import NeighboringLoss
+from util.noise import pyramid_noise_like
+from util.unet_prep import replace_unet_conv_in
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.27.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
+
+# Constants
+VALIDATION_BATCH_LIMIT = 8
+CHECKPOINT_FREQUENCY = 8
+VALIDATION_LOG_IMAGE_INDICES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+IMAGE_RESOLUTION = (480, 640)
 
 #############
 # Arguments
 #############
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Training code for 'Fine-Tuning Image-Conditional Diffusion Models is Easier than You Think'.")
+    parser = argparse.ArgumentParser(
+        description="Training code for 'Fine-Tuning Image-Conditional Diffusion Models is Easier than You Think'."
+    )
 
     parser.add_argument("--lr_exp_warmup_steps", type=int, default=100)
     parser.add_argument("--lr_total_iter_length", type=int, default=20000)
@@ -241,24 +248,22 @@ def main():
     dest_dir = os.path.join(args.output_dir, "prediction")
     os.makedirs(dest_dir, exist_ok=True)
 
-    #transformations for validation
+    # Transformations for validation
     to_tensor = transforms.ToTensor()
     instance_loss = NeighboringLoss()
-    res = (640, 648)
-    resize_nn = transforms.Resize(res, interpolation=Image.NEAREST)
-    resize = transforms.Resize(res, interpolation=Image.BILINEAR)
+    resize_nn = transforms.Resize(IMAGE_RESOLUTION, interpolation=Image.NEAREST)
+    resize = transforms.Resize(IMAGE_RESOLUTION, interpolation=Image.BILINEAR)
         
     def organize_weights(epoch):
-        '''
-            organize all weigths into "current_val_weigths" directory in args.output_dir
-            
-            Args:
-                epoch (int) : current epoch
+        """
+        Organize all weights into "current_val_weights" directory in args.output_dir
+        
+        Args:
+            epoch (int): Current epoch
 
-            Return:
-                current epoch weigths path (str)
-
-        '''
+        Returns:
+            str: Current epoch weights path
+        """
 
         unet_path = os.path.join(args.output_dir, f"Epoch-{epoch}","unet")
         val_weights_path = os.path.join(os.path.dirname(args.output_dir), "val_weights")
@@ -271,111 +276,92 @@ def main():
         shutil.copytree(unet_path, dest_path)
         
         return val_weights_path
-    
-    def rgb_to_binary(img, threshold=100):
-        '''
-            convert RGB image to  binary image
-            
-            Args:
-                img (np.array) : numpy array of shape [h,w,3]
-            
-            Returns:
-                (np.array) binary image of size [h,w] 
-        '''
-
-        mask = np.all(img<threshold, axis=-1)
-        binary_pred = np.where(mask, 0,1)
-        return binary_pred
-
-    def calculate_IoU(pred, gt): 
-        '''
-            Calculate IoU
-
-            Args:
-                pred (tensor) : RGB tensor of shape [h,w,3] 
-                gt (tensor) : RGB tensor of shape [h,w,3]
-
-            Returns:
-                int : iou of the prediction and gt 
-        '''
-        
-        binary_pred = rgb_to_binary(np.array(pred))
-        binary_gt = rgb_to_binary(np.array(gt))
-
-        IoU=jaccard_score(binary_gt.flatten(), binary_pred.flatten())
-
-        return IoU
 
 
     def validation(epoch, global_step):
-        '''
-            Performs validation and Logs the resuls
+        """
+        Performs validation and logs the results
 
-            Args:
-                val_loader
-                path to weights (move unet folder to outer folder first)
-
-        '''
+        Args:
+            epoch (int): Current epoch
+            global_step (int): Current global step
+        """
 
         val_loss = torch.tensor(0.0, requires_grad=False)
+        instance_loss.current_intra_loss = 0
+        instance_loss.current_inter_instance = 0
+        instance_loss.current_mean_loss = 0
+
         weights_path = organize_weights(epoch)
         
         pipe = gen2segSDPipeline.from_pretrained(
             weights_path,
             use_safetensors=True,         
         ).to("cuda")
-        IoU = 0
+
         with torch.no_grad(): 
             for batch_index, batch in enumerate(tqdm(val_dataloader, total=len(val_dataloader), desc="Validating")):
-                image = ((batch["rgb"] + 1) /2)
+                image = ((batch["rgb"] + 1) / 2)
                 seg = pipe(image).prediction
 
                 val_step = (epoch * 10000) + batch_index
                 ground_truth = batch["instance"]
 
-                if batch_index <10:
+                if batch_index in VALIDATION_LOG_IMAGE_INDICES:
                     print("Logging validation images")
 
-                    accelerator.log({"val_prediction" : wandb.Image(seg[0]),
-                                    "val_Image":wandb.Image(batch["img_path"][0]),
-                                    "val_GT" : wandb.Image(batch["gt_path"][0]),
-                                    "val_step":val_step
+                    accelerator.log({"val_prediction": wandb.Image(seg[0]),
+                                    "val_Image": wandb.Image(batch["img_path"][0]),
+                                    "val_GT": wandb.Image(batch["gt_path"][0]),
+                                    "val_step": val_step
                                     })            
                     
-                #transformation for loss
+                # Transformation for loss
                 seg = np.squeeze(seg)
                 seg = to_tensor(seg)
                 seg = resize(seg)
-                seg = seg[None,:,:,:]
+                seg = seg[None, :, :, :]
 
-                IoU += calculate_IoU(pred=seg,gt=ground_truth)
-
-                estimation_loss = instance_loss(seg.to("cuda"), ground_truth.to("cuda"), batch["no_bg"],neighbors=batch["neighbors"])
+                estimation_loss = instance_loss(
+                    seg.to("cuda"), 
+                    ground_truth.to("cuda"), 
+                    batch["no_bg"], 
+                    neighbors=batch["neighbors"]
+                )
                 val_loss = val_loss + estimation_loss 
-                
-            print("Logging validation loss and IoU")
-            mean_val_loss = val_loss/len(val_dataloader)
-            IoU = IoU/len(val_dataloader)
-            accelerator.log({"validation_loss" : mean_val_loss,
-                            "IoU" : IoU,"global_step":global_step,
-                            "val Intra-Instance Variance Loss" : instance_loss.current_intra_loss,
-                            "val Inter-Instance Separation Loss" : instance_loss.current_inter_instance,
-                            "val Mean-Level Separation Loss" : instance_loss.current_mean_loss
+
+                # if batch_index > VALIDATION_BATCH_LIMIT:
+                #     break    
+            mean_val_loss = val_loss / len(val_dataloader)
+            accelerator.log({"validation_loss": mean_val_loss,
+                            "global_step": global_step,
+                            "val Intra-Instance Variance Loss": instance_loss.current_intra_loss / len(val_dataloader),
+                            "val Inter-Instance Separation Loss": instance_loss.current_inter_instance / len(val_dataloader),
+                            "val Mean-Level Separation Loss": instance_loss.current_mean_loss / len(val_dataloader)
                         })
-            instance_loss.current_intra_loss=0
-            instance_loss.current_inter_instance=0
-            instance_loss.current_mean_loss=0
+            
+            instance_loss.current_intra_loss = 0
+            instance_loss.current_inter_instance = 0
+            instance_loss.current_mean_loss = 0
+            
+            del seg
+            del ground_truth
+            del image
+            
+            del estimation_loss
+            del pipe
+
+
 
     def save_prediction(prediction_batch, source_path_batch, batch_no):
-        '''
-            Save prediction from decoder based on batch number
-            
-            Args:
-                prediction_batch (tensor) : predicted masks (B, C, H, W)
-                source_path_batch (list(str)) : list of source images
-                batch_no (int) : batch number
-
-        '''
+        """
+        Save prediction from decoder based on batch number
+        
+        Args:
+            prediction_batch (tensor): Predicted masks (B, C, H, W)
+            source_path_batch (list[str]): List of source images
+            batch_no (int): Batch number
+        """
 
         dest_path = os.path.join(dest_dir, str(batch_no))
         os.makedirs(dest_path, exist_ok=True)
@@ -383,7 +369,7 @@ def main():
         for i in range(args.train_batch_size):
             image_name = os.path.basename(source_path_batch[i])
             save_path = os.path.join(dest_path, image_name) 
-            save_image(prediction_batch[i]/255, save_path)
+            save_image(prediction_batch[i] / 255, save_path)
 
 
     # Init accelerator and logger
@@ -551,10 +537,10 @@ def main():
         }
 
     # Setup datasets / dataloaders
-    ## EDIT THESE PATHS
-    fluo_root = "/netscratch/muhammad/ProcessedDatasets/Fluo-N3DH-SIM+"
-    train_dataset_fluo = Fluo_N3DH_SIM_with_neighbors(root_dir=fluo_root, split="train")
-    val_dataset_fluo = Fluo_N3DH_SIM_with_neighbors(root_dir=fluo_root, split="val")
+    # EDIT THESE PATHS
+    fluo_root_dir = "/netscratch/muhammad/ProcessedDatasets/Fluo-N3DH-SIM+"
+    train_dataset_fluo = Fluo_N3DH_SIM_with_neighbors(root_dir=fluo_root_dir, split="train")
+    val_dataset_fluo = Fluo_N3DH_SIM_with_neighbors(root_dir=fluo_root_dir, split="val")
 
     train_dataloader   = torch.utils.data.DataLoader(
         train_dataset_fluo,
@@ -676,16 +662,21 @@ def main():
     instance_loss     = NeighboringLoss()
 
     # Pre-compute empty text CLIP encoding
-    empty_token    = tokenizer([""], padding="max_length", truncation=True, return_tensors="pt").input_ids
-    empty_token    = empty_token.to(accelerator.device)
-    empty_encoding = text_encoder(empty_token, return_dict=False)[0]
-    empty_encoding = empty_encoding.to(accelerator.device)
+    empty_text_tokens = tokenizer(
+        [""], 
+        padding="max_length", 
+        truncation=True, 
+        return_tensors="pt"
+    ).input_ids
+    empty_text_tokens = empty_text_tokens.to(accelerator.device)
+    empty_text_encoding = text_encoder(empty_text_tokens, return_dict=False)[0]
+    empty_text_encoding = empty_text_encoding.to(accelerator.device)
 
     # For converting from predicted noise -> latents
-    alpha_prod = noise_scheduler.alphas_cumprod.to(accelerator.device, dtype=weight_dtype)
-    beta_prod  = 1 - alpha_prod
+    alpha_product = noise_scheduler.alphas_cumprod.to(accelerator.device, dtype=weight_dtype)
+    beta_product = 1 - alpha_product
 
-    log_path = os.path.join(args.output_dir,"output.json")
+    log_file_path = os.path.join(args.output_dir, "output.json")
 
     # Training loop
     for epoch in range(first_epoch, args.num_train_epochs):
@@ -693,19 +684,18 @@ def main():
         # Optionally clear cache at epoch start
         torch.cuda.empty_cache()
         gc.collect()
-      #  print("IMPORTANT: NORM DISABLED")
         train_loss = 0.0
 
-        for step, batch in enumerate(train_dataloader):
+        for step, batch in enumerate(tqdm(train_dataloader, total=len(train_dataloader), desc="training")):
             with accelerator.accumulate(unet):
                  
-                #Checkign images at spikes
+                # Checking images at spikes
                 image_paths = batch["img_path"]
                 image_log = {
-                    'step' : global_step + 1,
-                    'paths' : [str(p) for p in image_paths]
+                    'step': global_step + 1,
+                    'paths': [str(p) for p in image_paths]
                 }
-                with open(log_path, 'a') as f:
+                with open(log_file_path, 'a') as f:
                     f.write(json.dumps(image_log) + "\n")
 
                 # Encode RGB to latents
@@ -713,20 +703,22 @@ def main():
                     vae,
                     batch["rgb"].to(device=accelerator.device, dtype=weight_dtype)
                 )
-                rgb_latents = rgb_latents * vae.config.scaling_factor #to scale latents to make them have approximately unit variance
+                rgb_latents = rgb_latents * vae.config.scaling_factor  # Scale latents to unit variance
 
-                # Timesteps last time step suppose to be maximum noise but zero tensor is passed
-                timesteps = torch.ones((rgb_latents.shape[0],), device=rgb_latents.device) \
-                            * (noise_scheduler.config.num_train_timesteps - 1)
+                # Timesteps - last time step supposed to be maximum noise but zero tensor is passed
+                timesteps = (
+                    torch.ones((rgb_latents.shape[0],), device=rgb_latents.device) *
+                    (noise_scheduler.config.num_train_timesteps - 1)
+                )
                 timesteps = timesteps.long()
                 noisy_latents = torch.zeros_like(rgb_latents)
 
                 # UNet input: (rgb_latents, noisy_latents) if condition exists
-                encoder_hidden_states = empty_encoding.repeat(len(batch["rgb"]), 1, 1)
+                encoder_hidden_states = empty_text_encoding.repeat(len(batch["rgb"]), 1, 1)
 
                 unet_input = rgb_latents
 
-                model_pred = unet(
+                model_prediction = unet(
                     unet_input,
                     timesteps,
                     encoder_hidden_states,
@@ -735,22 +727,27 @@ def main():
 
                 loss = torch.tensor(0.0, device=accelerator.device, requires_grad=True)
 
-                alpha_prod_t = alpha_prod[timesteps].view(-1, 1, 1, 1)
-                beta_prod_t  = beta_prod[timesteps].view(-1, 1, 1, 1)
+                alpha_product_t = alpha_product[timesteps].view(-1, 1, 1, 1)
+                beta_product_t = beta_product[timesteps].view(-1, 1, 1, 1)
 
                 if noise_scheduler.config.prediction_type == "v_prediction":
-                    current_latent_estimate = (alpha_prod_t**0.5) * noisy_latents - (beta_prod_t**0.5) * model_pred
+                    current_latent_estimate = (
+                        (alpha_product_t**0.5) * noisy_latents - 
+                        (beta_product_t**0.5) * model_prediction
+                    )
                 elif noise_scheduler.config.prediction_type == "epsilon":
-                    current_latent_estimate = (noisy_latents - beta_prod_t**0.5 * model_pred) / (alpha_prod_t**0.5)
+                    current_latent_estimate = (
+                        (noisy_latents - beta_product_t**0.5 * model_prediction) / 
+                        (alpha_product_t**0.5)
+                    )
                 elif noise_scheduler.config.prediction_type == "sample":
-                    current_latent_estimate = model_pred
+                    current_latent_estimate = model_prediction
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 current_latent_estimate = current_latent_estimate / vae.config.scaling_factor
                 current_estimate = decode_image(vae, current_latent_estimate)
 
-                
                 min_val = torch.abs(current_estimate.min())
                 max_val = torch.abs(current_estimate.max())
                 current_estimate = (current_estimate + min_val) / (max_val + min_val + 1e-5)
@@ -760,7 +757,12 @@ def main():
                 ground_truth = batch["instance"].to(device=accelerator.device, dtype=weight_dtype)
 
 
-                estimation_loss = instance_loss(current_estimate, ground_truth, batch["no_bg"], neighbors=batch["neighbors"])
+                estimation_loss = instance_loss(
+                    current_estimate, 
+                    ground_truth, 
+                    batch["no_bg"], 
+                    neighbors=batch["neighbors"]
+                )
                 loss = loss + estimation_loss
 
                 # Backprop
@@ -779,31 +781,26 @@ def main():
 
             instance_loss.current_intra_loss = instance_loss.current_intra_loss / args.gradient_accumulation_steps 
             instance_loss.current_inter_instance = instance_loss.current_inter_instance / args.gradient_accumulation_steps 
-            instance_loss.current_mean_loss = instance_loss.current_mean_loss / args.gradient_accumulation_steps 
-
-            #saving prediction if loss is above a certian point
-            # if train_loss*args.gradient_accumulation_steps > 20 and global_step > args.lr_exp_warmup_steps:
-            #     print(train_loss*args.gradient_accumulation_steps) 
-            #     save_prediction(prediction_batch=current_estimate, source_path_batch=image_paths, batch_no=global_step)
+            instance_loss.current_mean_loss = instance_loss.current_mean_loss / args.gradient_accumulation_steps
 
             # If we just finished an accumulation step...
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
 
-                #logging losses and resetting them
+                # Logging losses and resetting them
                 print("Logging Training loss")
                 accelerator.log(
                     {
-                        "Intra-Instance Variance Loss" : instance_loss.current_intra_loss,
-                        "Inter-Instance Separation Loss" : instance_loss.current_inter_instance,
-                        "Mean-Level Separation Loss" : instance_loss.current_mean_loss,
+                        "Intra-Instance Variance Loss": instance_loss.current_intra_loss,
+                        "Inter-Instance Separation Loss": instance_loss.current_inter_instance,
+                        "Mean-Level Separation Loss": instance_loss.current_mean_loss,
                         "train_loss": train_loss,
                         "lr": lr_scheduler.get_last_lr()[0],
-                        "Image":wandb.Image(batch["img_path"][0], caption="Image"),
-                        "GT" : wandb.Image(batch["gt_path"][0], caption="GT"),
-                        "prediction" : wandb.Image(current_estimate[0], caption="Prediction"),
-                        "global_step":global_step
+                        "Image": wandb.Image(batch["img_path"][0], caption="Image"),
+                        "GT": wandb.Image(batch["gt_path"][0], caption="GT"),
+                        "prediction": wandb.Image(current_estimate[0], caption="Prediction"),
+                        "global_step": global_step
                     }
                 )
 
@@ -845,7 +842,7 @@ def main():
             progress_bar.set_postfix(**logs)
 
             # Delete / free memory
-            del rgb_latents, noisy_latents, model_pred
+            del rgb_latents, noisy_latents, model_prediction
             if 'current_latent_estimate' in locals():
                 del current_latent_estimate
             if 'current_estimate' in locals():
@@ -856,19 +853,18 @@ def main():
 
             # Early stopping
             if global_step >= args.max_train_steps:
+                print(f"Breaking at {global_step=} because it is greater than {args.max_train_steps=}")
                 break
 
-            # if (global_step % 8 == 0) and (global_step!=0):
-            #     # print(f"breaking at {global_step=}")
+            # if (step % CHECKPOINT_FREQUENCY == 0) and (step != 0):
+            #     print(f"Breaking at {step=}")
             #     break
 
         save_path = os.path.join(args.output_dir, f"Epoch-{epoch}")
         accelerator.save_state(save_path)
         logger.info(f"Saved Epoch Weight to {save_path}")        
         
-        # print(f"logging at line 797: {global_step}")
         validation(epoch, global_step)
-        # accelerator.log({"validation_loss" : val_loss}, step=global_step)
 
     # Post-training: create pipeline and save
     accelerator.wait_for_everyone()
