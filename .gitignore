@@ -10,6 +10,9 @@ gen2seg2
 imageGeneration
 PostProcessing
 wandb
+gen2seg_experimental/training/model-finetuned
+
+
 
 
 # Byte-compiled / optimized / DLL files
