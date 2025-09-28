@@ -651,6 +651,11 @@ def main():
             first_epoch = global_step // num_update_steps_per_epoch
     else:
         initial_global_step = 0
+    
+    accelerator.load_state("/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_fluo_with_neighborsLoss_background_neighbors/Epoch-8")
+    global_step = 8820
+    initial_global_step = global_step
+    first_epoch = 9
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -797,12 +802,17 @@ def main():
                         "Mean-Level Separation Loss": instance_loss.current_mean_loss,
                         "train_loss": train_loss,
                         "lr": lr_scheduler.get_last_lr()[0],
-                        "Image": wandb.Image(batch["img_path"][0], caption="Image"),
-                        "GT": wandb.Image(batch["gt_path"][0], caption="GT"),
-                        "prediction": wandb.Image(current_estimate[0], caption="Prediction"),
                         "global_step": global_step
                     }
                 )
+                if global_step%20:
+                    accelerator.log(
+                    {
+                        "Image": wandb.Image(batch["img_path"][0], caption="Image"),
+                        "GT": wandb.Image(batch["gt_path"][0], caption="GT"),
+                        "prediction": wandb.Image(current_estimate[0], caption="Prediction"),
+                    }
+                    )   
 
                 instance_loss.current_intra_loss = 0
                 instance_loss.current_inter_instance = 0
