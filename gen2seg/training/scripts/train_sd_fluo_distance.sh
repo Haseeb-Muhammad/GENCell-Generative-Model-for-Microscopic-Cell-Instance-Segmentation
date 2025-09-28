@@ -1,6 +1,6 @@
 #!/bin/bash
 
-accelerate launch /netscratch/muhammad/codes/gen2seg/training/train_sd_fluo_distance.py \
+accelerate launch /netscratch/muhammad/codes/gen2seg/training/train_distance_based_SD_Fluo.py \
   --pretrained_model_name_or_path "stabilityai/stable-diffusion-2" \
   --checkpointing_steps 1000 \
   --train_batch_size 2  \

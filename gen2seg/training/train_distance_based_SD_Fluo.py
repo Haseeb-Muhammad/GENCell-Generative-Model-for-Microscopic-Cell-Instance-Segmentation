@@ -57,6 +57,13 @@ if is_wandb_available():
 check_min_version("0.27.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
 
+#constants
+# Constants
+VALIDATION_BATCH_LIMIT = 8
+CHECKPOINT_FREQUENCY = 8
+VALIDATION_LOG_IMAGE_INDICES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+IMAGE_RESOLUTION = (480, 640)
+
 #############
 # Arguments
 #############
@@ -271,40 +278,6 @@ def main():
         shutil.copytree(unet_path, dest_path)
         
         return val_weights_path
-    
-    def rgb_to_binary(img, threshold=100):
-        '''
-            convert RGB image to  binary image
-            
-            Args:
-                img (np.array) : numpy array of shape [h,w,3]
-            
-            Returns:
-                (np.array) binary image of size [h,w] 
-        '''
-
-        mask = np.all(img<threshold, axis=-1)
-        binary_pred = np.where(mask, 0,1)
-        return binary_pred
-
-    def calculate_IoU(pred, gt): 
-        '''
-            Calculate IoU
-
-            Args:
-                pred (tensor) : RGB tensor of shape [h,w,3] 
-                gt (tensor) : RGB tensor of shape [h,w,3]
-
-            Returns:
-                int : iou of the prediction and gt 
-        '''
-        
-        binary_pred = rgb_to_binary(np.array(pred))
-        binary_gt = rgb_to_binary(np.array(gt))
-
-        IoU=jaccard_score(binary_gt.flatten(), binary_pred.flatten())
-
-        return IoU
 
 
     def validation(epoch, global_step):
@@ -318,13 +291,17 @@ def main():
         '''
 
         val_loss = torch.tensor(0.0, requires_grad=False)
+        instance_loss.current_intra_loss = 0
+        instance_loss.current_inter_instance = 0
+        instance_loss.current_mean_loss = 0
+
         weights_path = organize_weights(epoch)
         
         pipe = gen2segSDPipeline.from_pretrained(
             weights_path,
             use_safetensors=True,         
         ).to("cuda")
-        IoU = 0
+
         with torch.no_grad(): 
             for batch_index, batch in enumerate(tqdm(val_dataloader, total=len(val_dataloader), desc="Validating")):
                 image = ((batch["rgb"] + 1) /2)
@@ -333,7 +310,7 @@ def main():
                 val_step = (epoch * 10000) + batch_index
                 ground_truth = batch["instance"]
 
-                if batch_index <10:
+                if batch_index in VALIDATION_LOG_IMAGE_INDICES:
                     print("Logging validation images")
 
                     accelerator.log({"val_prediction" : wandb.Image(seg[0]),
@@ -348,16 +325,14 @@ def main():
                 seg = resize(seg)
                 seg = seg[None,:,:,:]
 
-                IoU += calculate_IoU(pred=seg,gt=ground_truth)
-
                 estimation_loss = instance_loss(seg.to("cuda"), ground_truth.to("cuda"), batch["no_bg"],distances=batch["distances"])
                 val_loss = val_loss + estimation_loss 
                 
-            print("Logging validation loss and IoU")
+            print("Logging validation loss")
             mean_val_loss = val_loss/len(val_dataloader)
             IoU = IoU/len(val_dataloader)
             accelerator.log({"validation_loss" : mean_val_loss,
-                            "IoU" : IoU,"global_step":global_step,
+                            "global_step":global_step,
                             "val Intra-Instance Variance Loss" : instance_loss.current_intra_loss,
                             "val Inter-Instance Separation Loss" : instance_loss.current_inter_instance,
                             "val Mean-Level Separation Loss" : instance_loss.current_mean_loss
@@ -365,6 +340,13 @@ def main():
             instance_loss.current_intra_loss=0
             instance_loss.current_inter_instance=0
             instance_loss.current_mean_loss=0
+
+            del seg
+            del ground_truth
+            del image
+            
+            del estimation_loss
+            del pipe
 
     def save_prediction(prediction_batch, source_path_batch, batch_no):
         '''
@@ -553,8 +535,8 @@ def main():
     # Setup datasets / dataloaders
     ## EDIT THESE PATHS
     fluo_root = "/netscratch/muhammad/ProcessedDatasets/Fluo-N3DH-SIM+"
-    train_dataset_fluo = Fluo_N3DH_SIM_with_neighbors(root_dir=fluo_root, split="train")
-    val_dataset_fluo = Fluo_N3DH_SIM_with_neighbors(root_dir=fluo_root, split="val")
+    train_dataset_fluo = Fluo_N3DH_SIM_with_distances(root_dir=fluo_root, split="train")
+    val_dataset_fluo = Fluo_N3DH_SIM_with_distances(root_dir=fluo_root, split="val")
 
     train_dataloader   = torch.utils.data.DataLoader(
         train_dataset_fluo,

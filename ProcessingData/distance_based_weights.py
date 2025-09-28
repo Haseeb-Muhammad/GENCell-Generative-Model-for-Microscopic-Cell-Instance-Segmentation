@@ -1,21 +1,22 @@
-import numpy as np
-from PIL import Image
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-import numpy as np
-from PIL import Image
-from tqdm import tqdm
 import argparse
-import os
 import glob
 import json
+import os
+from typing import Dict, Tuple
 
-def rgb_to_instance_id(rgb_pixel):
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+
+def rgb_to_instance_id(rgb_pixel: np.ndarray) -> int:
+    """Convert RGB pixel to instance ID."""
     if np.all(rgb_pixel == 0):
         return 0
     return int(rgb_pixel[0]) * 256 * 256 + int(rgb_pixel[1]) * 256 + int(rgb_pixel[2])
 
-def instance_id_to_rgb(instance_id):
+
+def instance_id_to_rgb(instance_id: int) -> np.ndarray:
+    """Convert instance ID to RGB pixel."""
     if instance_id == 0:
         return np.array([0, 0, 0])
     r = instance_id // (256 * 256)
@@ -24,17 +25,16 @@ def instance_id_to_rgb(instance_id):
     return np.array([r, g, b])
 
 
-def instance_distance(gt: np.ndarray) -> dict[str: dict[str:float]]:
-    '''
-        Calculates the distance of all instances from all other distances
+def instance_distance(gt: np.ndarray) -> Dict[str, Dict[str, float]]:
+    """
+    Calculate the distance of all instances from all other instances.
 
-        Args:
-            gt (nd.array): Ground truth image as numpy array
-        
-        Returns:
-            Dict[str: dict[str:float]] : {instancesID : {instanceID : distance_btw_instances}}
-    '''
+    Args:
+        gt (np.ndarray): Ground truth image as numpy array
 
+    Returns:
+        Dict[str, Dict[str, float]]: {instanceID: {instanceID: distance_between_instances}}
+    """
     rows, cols = gt.shape[:2]
 
     # Build instance ID map
@@ -46,27 +46,32 @@ def instance_distance(gt: np.ndarray) -> dict[str: dict[str:float]]:
     instance_ids = np.unique(instance_map)
     instance_ids = instance_ids[instance_ids != 0]
 
-    inst_cords = {} # {inst_id: (cord_x, cord_y), ...}
+    # Calculate centroid coordinates for each instance
+    inst_coords = {}  # {inst_id: (coord_x, coord_y), ...}
     print(f"{instance_ids=}")
     for instance_id in instance_ids:
-        cords = np.argwhere(np.where(instance_map==instance_id,1,0))
+        coords = np.argwhere(np.where(instance_map == instance_id, 1, 0))
         
-        mean_x, mean_y = np.mean(cords, axis=0)
-        mean_x, mean_y = int(mean_x) , int(mean_y)
+        mean_x, mean_y = np.mean(coords, axis=0)
+        mean_x, mean_y = int(mean_x), int(mean_y)
         
-        inst_cords[instance_id] = (mean_x,mean_y)
-        
-    distances = {} # {inst_id : {inst_id:dist, ...}, ...}
-    for inst, cord in inst_cords.items():
+        inst_coords[instance_id] = (mean_x, mean_y)
+    
+    # Calculate distances between all pairs of instances
+    distances = {}  # {inst_id: {inst_id: dist, ...}, ...}
+    for inst, coord in inst_coords.items():
         distances[str(inst)] = {}
-        for inst1, cord1 in inst_cords.items():
+        for inst1, coord1 in inst_coords.items():
             if inst1 != inst:
-                distances[str(inst)][str(inst1)] = np.sqrt((cord1[0] - cord[0])**2 + (cord1[1] - cord[1])**2) 
+                distances[str(inst)][str(inst1)] = np.sqrt(
+                    (coord1[0] - coord[0])**2 + (coord1[1] - coord[1])**2
+                )
     
     print("Distance calculation completed")
     return distances
 
-def calculate_exponential_weights(distances_dict: dict, decay_factor: float = 1.0) -> dict:
+def calculate_exponential_weights(distances_dict: Dict[str, Dict[str, float]], 
+                                decay_factor: float = 1.0) -> Dict[str, Dict[str, float]]:
     """
     Calculate weights using exponential decay for instance segmentation loss.
     
@@ -74,12 +79,12 @@ def calculate_exponential_weights(distances_dict: dict, decay_factor: float = 1.
     weight = exp(-decay_factor × normalized_distance)
     
     Args:
-        distances_dict (dict): {instance_id_str: {neighbor_id_str: distance}}
-        decay_factor (float): Controls weight decay rate. Higher = faster decay.
-                             Recommended values: 0.5-2.0
+        distances_dict: {instance_id_str: {neighbor_id_str: distance}}
+        decay_factor: Controls weight decay rate. Higher = faster decay.
+                     Recommended values: 0.5-2.0
     
     Returns:
-        dict: {instance_id_str: {neighbor_id_str: weight}} where weights ∈ (0, 1]
+        Dict: {instance_id_str: {neighbor_id_str: weight}} where weights ∈ (0, 1]
     """
     if not distances_dict:
         return {}
@@ -115,16 +120,16 @@ def calculate_exponential_weights(distances_dict: dict, decay_factor: float = 1.
     return weights_dict
 
 
-def apply_weights_to_image(image_path: str, decay_factor: float = 5.0) -> dict:
+def apply_weights_to_image(image_path: str, decay_factor: float = 5.0) -> Dict[str, Dict[str, float]]:
     """
-    Complete pipeline: Load image → Calculate distances → Generate weights
+    Complete pipeline: Load image → Calculate distances → Generate weights.
     
     Args:
-        image_path (str): Path to RGB instance segmentation image
-        decay_factor (float): Exponential decay parameter
+        image_path: Path to RGB instance segmentation image
+        decay_factor: Exponential decay parameter
         
     Returns:
-        dict: Weights dictionary ready for loss calculation
+        Dict: Weights dictionary ready for loss calculation
     """
     # Load and process image
     img = np.array(Image.open(image_path))
@@ -141,21 +146,31 @@ def apply_weights_to_image(image_path: str, decay_factor: float = 5.0) -> dict:
     
     return weights
 
-def parse_args():
 
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-
-    parser.add_argument("--root_dir", type=str, default="/netscratch/muhammad/ProcessedDatasets/Fluo-N3DH-SIM+")
-    parser.add_argument("--dest_path", type=str, default="neighbors.json")
+    parser.add_argument(
+        "--root_dir", 
+        type=str, 
+        default="/netscratch/muhammad/ProcessedDatasets/Fluo-N3DH-SIM+",
+        help="Root directory containing the dataset"
+    )
+    parser.add_argument(
+        "--dest_path", 
+        type=str, 
+        default="neighbors.json",
+        help="Destination path for the output file"
+    )
     
     return parser.parse_args()
 
-def main():
+def main() -> None:
+    """Main function to process images and generate distance-based weights."""
     args = parse_args()
     
-    for split in ["train","val"]:
-        gt_paths = sorted(glob.glob(os.path.join(args.root_dir, "gt", split,"*.png")))
-        # gt_paths = sorted(glob.glob("C:\\Users\\hasee\\Desktop\\DFKI\\Visual Results\\gt_first_10_test_images\\*.png"))
+    for split in ["train", "val"]:
+        gt_paths = sorted(glob.glob(os.path.join(args.root_dir, "gt", split, "*.png")))
 
         neighbors = {}
         batch_size = 100  # Process in batches to avoid memory overflow

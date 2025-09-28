@@ -1,5 +1,16 @@
+CellSegmentation
+CutLER
 datasets
+DataProcessing
 finetuningSD
+finetuningSD2
+finetuningVAE
+gen2seg/training/model-finetuned
+gen2seg2
+imageGeneration
+PostProcessing
+wandb
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
