@@ -1,6 +1,6 @@
 #srun -K -p A100-80GB,H100,H200,H200-SDS,H100-RP \
 #batch,V100-32GB-SDS,V100-32GB,V100-32GB-SDS,RTXA6000 
-srun -K -p A100-80GB,H100,H200,H200-SDS,H100-RP \
+srun -K -p A100-80GB,H100,H200,H200-SDS,H100-RP  \
   --job-name="Gen2SegwithBG" \
   --gpus=1 \
   --ntasks=1 \

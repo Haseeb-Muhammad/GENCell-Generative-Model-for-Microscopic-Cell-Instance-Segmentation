@@ -251,9 +251,8 @@ def main():
     #transformations for validation
     to_tensor = transforms.ToTensor()
     instance_loss = DistanceLoss()
-    res = (640, 648)
-    resize_nn = transforms.Resize(res, interpolation=Image.NEAREST)
-    resize = transforms.Resize(res, interpolation=Image.BILINEAR)
+    resize_nn = transforms.Resize(IMAGE_RESOLUTION, interpolation=Image.NEAREST)
+    resize = transforms.Resize(IMAGE_RESOLUTION, interpolation=Image.BILINEAR)
         
     def organize_weights(epoch):
         '''
@@ -281,14 +280,13 @@ def main():
 
 
     def validation(epoch, global_step):
-        '''
-            Performs validation and Logs the resuls
+        """
+        Performs validation and logs the results
 
-            Args:
-                val_loader
-                path to weights (move unet folder to outer folder first)
-
-        '''
+        Args:
+            epoch (int): Current epoch
+            global_step (int): Current global step
+        """
 
         val_loss = torch.tensor(0.0, requires_grad=False)
         instance_loss.current_intra_loss = 0
@@ -304,7 +302,7 @@ def main():
 
         with torch.no_grad(): 
             for batch_index, batch in enumerate(tqdm(val_dataloader, total=len(val_dataloader), desc="Validating")):
-                image = ((batch["rgb"] + 1) /2)
+                image = ((batch["rgb"] + 1) / 2)
                 seg = pipe(image).prediction
 
                 val_step = (epoch * 10000) + batch_index
@@ -313,34 +311,40 @@ def main():
                 if batch_index in VALIDATION_LOG_IMAGE_INDICES:
                     print("Logging validation images")
 
-                    accelerator.log({"val_prediction" : wandb.Image(seg[0]),
-                                    "val_Image":wandb.Image(batch["img_path"][0]),
-                                    "val_GT" : wandb.Image(batch["gt_path"][0]),
-                                    "val_step":val_step
+                    accelerator.log({"val_prediction": wandb.Image(seg[0]),
+                                    "val_Image": wandb.Image(batch["img_path"][0]),
+                                    "val_GT": wandb.Image(batch["gt_path"][0]),
+                                    "val_step": val_step
                                     })            
                     
-                #transformation for loss
+                # Transformation for loss
                 seg = np.squeeze(seg)
                 seg = to_tensor(seg)
                 seg = resize(seg)
-                seg = seg[None,:,:,:]
+                seg = seg[None, :, :, :]
 
-                estimation_loss = instance_loss(seg.to("cuda"), ground_truth.to("cuda"), batch["no_bg"],distances=batch["distances"])
+                estimation_loss = instance_loss(
+                    seg.to("cuda"), 
+                    ground_truth.to("cuda"), 
+                    batch["no_bg"], 
+                    distances=batch["distances"]
+                )
                 val_loss = val_loss + estimation_loss 
-                
-            print("Logging validation loss")
-            mean_val_loss = val_loss/len(val_dataloader)
-            IoU = IoU/len(val_dataloader)
-            accelerator.log({"validation_loss" : mean_val_loss,
-                            "global_step":global_step,
-                            "val Intra-Instance Variance Loss" : instance_loss.current_intra_loss,
-                            "val Inter-Instance Separation Loss" : instance_loss.current_inter_instance,
-                            "val Mean-Level Separation Loss" : instance_loss.current_mean_loss
-                        })
-            instance_loss.current_intra_loss=0
-            instance_loss.current_inter_instance=0
-            instance_loss.current_mean_loss=0
 
+                # if batch_index > VALIDATION_BATCH_LIMIT:
+                #     break    
+            mean_val_loss = val_loss / len(val_dataloader)
+            accelerator.log({"validation_loss": mean_val_loss,
+                            "global_step": global_step,
+                            "val Intra-Instance Variance Loss": instance_loss.current_intra_loss / len(val_dataloader),
+                            "val Inter-Instance Separation Loss": instance_loss.current_inter_instance / len(val_dataloader),
+                            "val Mean-Level Separation Loss": instance_loss.current_mean_loss / len(val_dataloader)
+                        })
+            
+            instance_loss.current_intra_loss = 0
+            instance_loss.current_inter_instance = 0
+            instance_loss.current_mean_loss = 0
+            
             del seg
             del ground_truth
             del image
@@ -500,7 +504,7 @@ def main():
     # Custom collate function to handle neighbors field
     def custom_collate_fn(batch):
         """
-        Custom collate function to handle batching when samples have different neighbor dictionaries.
+        Custom collate function to handle batching when samples have different distance dictionaries.
         """
         # Separate the different types of data
         rgb_tensors = []
@@ -508,7 +512,7 @@ def main():
         no_bg_values = []
         img_paths = []
         gt_paths = []
-        neighbors_list = []
+        distance_list = []
         
         for sample in batch:
             rgb_tensors.append(sample['rgb'])
@@ -516,7 +520,7 @@ def main():
             no_bg_values.append(sample['no_bg'])
             img_paths.append(sample['img_path'])
             gt_paths.append(sample['gt_path'])
-            neighbors_list.append(sample['neighbors'])
+            distance_list.append(sample['distances'])
         
         # Stack tensors normally
         rgb_batch = torch.stack(rgb_tensors)
@@ -529,7 +533,7 @@ def main():
             'no_bg': no_bg_batch,
             'img_path': img_paths,
             'gt_path': gt_paths,
-            'neighbors': neighbors_list  # Keep as list of dicts
+            'distances': distance_list  # Keep as list of dicts
         }
 
     # Setup datasets / dataloaders
@@ -773,21 +777,25 @@ def main():
                 progress_bar.update(1)
                 global_step += 1
 
-                #logging losses and resetting them
-                print("Logging Training loss")
+                # Logging losses and resetting them
                 accelerator.log(
                     {
-                        "Intra-Instance Variance Loss" : instance_loss.current_intra_loss,
-                        "Inter-Instance Separation Loss" : instance_loss.current_inter_instance,
-                        "Mean-Level Separation Loss" : instance_loss.current_mean_loss,
+                        "Intra-Instance Variance Loss": instance_loss.current_intra_loss,
+                        "Inter-Instance Separation Loss": instance_loss.current_inter_instance,
+                        "Mean-Level Separation Loss": instance_loss.current_mean_loss,
                         "train_loss": train_loss,
                         "lr": lr_scheduler.get_last_lr()[0],
-                        "Image":wandb.Image(batch["img_path"][0], caption="Image"),
-                        "GT" : wandb.Image(batch["gt_path"][0], caption="GT"),
-                        "prediction" : wandb.Image(current_estimate[0], caption="Prediction"),
-                        "global_step":global_step
+                        "global_step": global_step
                     }
                 )
+                if global_step%20:
+                    accelerator.log(
+                    {
+                        "Image": wandb.Image(batch["img_path"][0], caption="Image"),
+                        "GT": wandb.Image(batch["gt_path"][0], caption="GT"),
+                        "prediction": wandb.Image(current_estimate[0], caption="Prediction"),
+                    }
+                    ) 
 
                 instance_loss.current_intra_loss = 0
                 instance_loss.current_inter_instance = 0
@@ -840,8 +848,8 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
-            # if (global_step % 8 == 0) and (global_step!=0):
-            #     # print(f"breaking at {global_step=}")
+            # if (step % CHECKPOINT_FREQUENCY == 0) and (step != 0):
+            #     print(f"Breaking at {step=}")
             #     break
 
         save_path = os.path.join(args.output_dir, f"Epoch-{epoch}")

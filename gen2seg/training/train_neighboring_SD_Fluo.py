@@ -652,10 +652,10 @@ def main():
     else:
         initial_global_step = 0
     
-    accelerator.load_state("/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_fluo_with_neighborsLoss_background_neighbors/Epoch-8")
-    global_step = 8820
+    accelerator.load_state("/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_fluo_with_neighborsLoss_background_neighbors/Epoch-14")
+    global_step = 14700
     initial_global_step = global_step
-    first_epoch = 9
+    first_epoch = 15
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),

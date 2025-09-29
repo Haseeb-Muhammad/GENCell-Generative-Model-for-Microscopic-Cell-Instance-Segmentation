@@ -169,7 +169,7 @@ def main() -> None:
     """Main function to process images and generate distance-based weights."""
     args = parse_args()
     
-    for split in ["train", "val"]:
+    for split in ["train"]:
         gt_paths = sorted(glob.glob(os.path.join(args.root_dir, "gt", split, "*.png")))
 
         neighbors = {}
