@@ -11,6 +11,7 @@ imageGeneration
 PostProcessing
 wandb
 gen2seg_experimental/training/model-finetuned
+diffusers_image_generation/Results
 
 
 
