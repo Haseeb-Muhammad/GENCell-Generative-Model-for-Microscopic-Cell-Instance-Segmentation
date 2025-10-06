@@ -9,6 +9,7 @@ from pathlib import Path
 
 import accelerate
 import datasets
+from extended_dataset import NestedImageDataset
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator, InitProcessGroupKwargs
@@ -448,7 +449,8 @@ def main(args):
             split="train",
         )
     else:
-        dataset = load_dataset("imagefolder", data_dir=args.train_data_dir, cache_dir=args.cache_dir, split="train")
+        #dataset = load_dataset("imagefolder", data_dir=args.train_data_dir, cache_dir=args.cache_dir, split="train")
+        pass
         # See more about loading custom images at
         # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
 
@@ -462,6 +464,7 @@ def main(args):
             transforms.Normalize([0.5], [0.5]),
         ]
     )
+    dataset = NestedImageDataset(args.train_data_dir, transform=augmentations)
 
     def transform_images(examples):
         images = [augmentations(image.convert("RGB")) for image in examples["image"]]
