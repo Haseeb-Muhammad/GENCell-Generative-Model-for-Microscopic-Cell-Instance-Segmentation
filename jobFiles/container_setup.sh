@@ -11,7 +11,7 @@ srun -K -p batch,V100-32GB-SDS,V100-32GB,V100-32GB-SDS,RTXA6000  \
   --mem=64G \
   --pty \
   --immediate=3400 \
-  --container-save=/netscratch/muhammad/image_gen.sqsh  \
+  --container-save=/netscratch/muhammad/test.sqsh  \
   --container-mounts=/netscratch:/netscratch,"`pwd`":"`pwd`" \
     bash
 #    /bin/bash -c "bash /netscratch/muhammad/codes/gen2seg/training/scripts/train_sd_fluoDataset.sh"
