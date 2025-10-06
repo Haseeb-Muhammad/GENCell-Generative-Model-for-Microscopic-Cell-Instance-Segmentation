@@ -2,20 +2,21 @@ import torch
 from gen2seg_sd_pipeline import gen2segSDPipeline  # Import your custom pipeline
 from PIL import Image
 import numpy as np
-from cellTrackingChallengeLoader import CellTrackingChallengeTest
+from CellTrackingChallengeTest import cellTrackingChallengeLoader
 from tqdm import tqdm
 import os
 import shutil
+import glob
 
-fluo_root = "/netscratch/muhammad/ProcessedDatasets/Fluo-C3DL-MDA231"
+fluo_root = "/netscratch/muhammad/ProcessedDatasets/Fluo-N3DH-SIM+"
 
-test_dataset_fluo = CellTrackingChallengeTest(root_dir=fluo_root, split="test")
+test_dataset_fluo = cellTrackingChallengeLoader(root_dir=fluo_root, split="test")
 test_dataloader   = torch.utils.data.DataLoader(
     test_dataset_fluo,
     batch_size=1
 )
     
-def organize_weights(weigths_dir, eval_weights_dir="/netscratch/muhammad/codes/gen2seg/training/model-finetuned/test_weights"):
+def organize_weights(weigths_dir, eval_weights_dir="/netscratch/muhammad/codes/gen2seg/training/model-finetuned/val_weights"):
     '''
         organize all weigths into "current_val_weigths" directory in args.output_dir
         
@@ -36,7 +37,7 @@ def organize_weights(weigths_dir, eval_weights_dir="/netscratch/muhammad/codes/g
     
     return eval_weights_dir
 
-def evaluate(weight_dir, dest_dir="/netscratch/muhammad/codes/gen2seg/results/Fluo-C3DL-MDA231"):
+def evaluate(weight_dir, dest_dir="/netscratch/muhammad/codes/gen2seg/results/Fluo-N3DH-SIM+"):
     
     weights_path = organize_weights(weigths_dir=weight_dir)
     training_name = weight_dir.split("/")[-2]
@@ -52,16 +53,15 @@ def evaluate(weight_dir, dest_dir="/netscratch/muhammad/codes/gen2seg/results/Fl
 
     with torch.no_grad(): 
         for batch_index, batch in enumerate(tqdm(test_dataloader, total=len(test_dataloader), desc="Testing")):
-            image = Image.open(batch[0]).convert("RGB")
-
+            image = Image.open(batch["img_path"][0]).convert("RGB")
             orig_res = image.size
 
             seg = pipe(image).prediction.squeeze()
             seg = np.array(seg).astype(np.uint8)
             pred = Image.fromarray(seg).resize(orig_res, Image.LANCZOS)
 
-            image_name = os.path.basename(batch[0])
+            image_name = os.path.basename(batch["img_path"][0])
             dest_path = os.path.join(dest_dir, image_name)
             pred.save(dest_path)
             
-evaluate(weight_dir="/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_extendedDatasetAllSlicesExtendedTraining/Epoch-5")
+evaluate(weight_dir="/netscratch/muhammad/codes/gen2seg/training/model-finetuned/stable_diffusion_fluo_slice_wise/Epoch-15")
